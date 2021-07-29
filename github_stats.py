@@ -40,7 +40,9 @@ class Queries(object):
                 r = await self.session.post("https://api.github.com/graphql",
                                             headers=headers,
                                             json={"query": generated_query})
-            return await r.json()
+            result = await r.json()
+            if result is not None:
+                return result
         except:
             print("aiohttp failed for GraphQL query")
             # Fall back on non-async requests
@@ -48,7 +50,10 @@ class Queries(object):
                 r = requests.post("https://api.github.com/graphql",
                                   headers=headers,
                                   json={"query": generated_query})
-                return r.json()
+                result = r.json()
+                if result is not None:
+                    return result
+        return dict()
 
     async def query_rest(self, path: str, params: Optional[Dict] = None) -> Dict:
         """
@@ -231,9 +236,13 @@ class Stats(object):
     """
     def __init__(self, username: str, access_token: str,
                  session: aiohttp.ClientSession,
-                 exclude_repos: Optional[Set] = None):
+                 exclude_repos: Optional[Set] = None,
+                 exclude_langs: Optional[Set] = None,
+                 ignore_forked_repos: bool = False):
         self.username = username
+        self._ignore_forked_repos = ignore_forked_repos
         self._exclude_repos = set() if exclude_repos is None else exclude_repos
+        self._exclude_langs = set() if exclude_langs is None else exclude_langs
         self.queries = Queries(username, access_token, session)
 
         self._name = None
@@ -282,6 +291,7 @@ Languages:
                 Queries.repos_overview(owned_cursor=next_owned,
                                        contrib_cursor=next_contrib)
             )
+            raw_results = raw_results if raw_results is not None else {}
 
             self._name = (raw_results
                           .get("data", {})
@@ -301,10 +311,14 @@ Languages:
                            .get("data", {})
                            .get("viewer", {})
                            .get("repositories", {}))
-            repos = (contrib_repos.get("nodes", [])
-                     + owned_repos.get("nodes", []))
+
+            repos = owned_repos.get("nodes", [])
+            if not self._ignore_forked_repos:
+                repos += contrib_repos.get("nodes", [])
 
             for repo in repos:
+                if repo is None:
+                    continue
                 name = repo.get("nameWithOwner")
                 if name in self._repos or name in self._exclude_repos:
                     continue
@@ -315,8 +329,7 @@ Languages:
                 for lang in repo.get("languages", {}).get("edges", []):
                     name = lang.get("node", {}).get("name", "Other")
                     languages = await self.languages
-                    if name == "HTML" or name == "Jupyter Notebook" or name == "CSS" or name == "TypeScript":
-                        continue
+                    if name in self._exclude_langs: continue
                     if name in languages:
                         languages[name]["size"] += lang.get("size", 0)
                         languages[name]["occurrences"] += 1
